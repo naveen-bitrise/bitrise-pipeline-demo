@@ -1,0 +1,289 @@
+---
+format_version: "25"
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: android
+
+pipelines:
+  run_ui_tests:
+    workflows:
+      build_androidTest_apk: {}
+      build_debug_apk: {}
+      run_instrumentation_tests:
+        depends_on:
+        - build_androidTest_apk
+        - build_debug_apk
+        parallel: $TEST_APK_COUNT
+
+workflows:
+  build_androidTest_apk:
+    summary: Build instrumentation test APKs for all modules and write an index file.
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - restore-gradle-cache@3: {}
+    - gradle-runner@5:
+        title: Assemble Android Test APKs
+        inputs:
+        - gradlew_path: "./gradlew"
+        - gradle_task: assembleAndroidTest
+    - script@1:
+        title: Collect test APKs and write index
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euo pipefail
+            find . -name "*-androidTest.apk" \
+              -not -path "*/node_modules/*" \
+              | while read -r apk; do
+                base="$(basename "$apk")"
+                cp "$apk" "$BITRISE_DEPLOY_DIR/"
+                echo "$base"
+              done \
+              | LC_ALL=C sort > "$BITRISE_DEPLOY_DIR/test_apks.txt"
+
+            TEST_APK_COUNT=$(wc -l < "$BITRISE_DEPLOY_DIR/test_apks.txt" | tr -d ' ')
+            envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
+
+            INTERMEDIATE_FILES="$BITRISE_DEPLOY_DIR/test_apks.txt"
+            while IFS= read -r apk_name; do
+              INTERMEDIATE_FILES="${INTERMEDIATE_FILES}"$'\n'"$BITRISE_DEPLOY_DIR/${apk_name}"
+            done < "$BITRISE_DEPLOY_DIR/test_apks.txt"
+            envman add --key TEST_INTERMEDIATE_FILES --value "$INTERMEDIATE_FILES"
+
+            echo "Test APKs indexed ($TEST_APK_COUNT):"
+            cat "$BITRISE_DEPLOY_DIR/test_apks.txt"
+    - share-pipeline-variable@1:
+        inputs:
+        - variables: TEST_APK_COUNT=$TEST_APK_COUNT
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2:
+        inputs:
+        - pipeline_intermediate_files: "$TEST_INTERMEDIATE_FILES"
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.4large
+
+  build_debug_apk:
+    summary: Build the debug APK.
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - restore-gradle-cache@3: {}
+    - android-build@1:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - module: app
+        - variant: debug
+        - cache_level: none
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2:
+        inputs:
+        - pipeline_intermediate_files: "$BITRISE_APK_PATH"
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.4large
+
+  run_instrumentation_tests:
+    summary: Run instrumentation tests for one module, selected by $BITRISE_IO_PARALLEL_INDEX.
+    steps:
+    - pull-intermediate-files@1:
+        inputs:
+        - artifact_sources: build_androidTest_apk,build_debug_apk
+    - script@1:
+        title: Select test APK by parallel index
+        inputs:
+        - content: |-
+            #!/usr/bin/env bash
+            set -euo pipefail
+            APK_INDEX_FILE="$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/test_apks.txt"
+            TEST_APK_NAME=$(sed -n "$((BITRISE_IO_PARALLEL_INDEX + 1))p" "$APK_INDEX_FILE")
+
+            if [[ -z "$TEST_APK_NAME" ]]; then
+              echo "No APK found for index $BITRISE_IO_PARALLEL_INDEX"
+              exit 1
+            fi
+
+            echo "Running tests for: $TEST_APK_NAME"
+            envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
+    - virtual-device-testing-for-android@1:
+        inputs:
+        - test_type: instrumentation
+        - app_apk_path: "$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/app-debug.apk"
+        - test_apk_path: "$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/$TEST_APK_NAME"
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.4large
+
+  run_unit_tests:
+    summary: Run your Android unit tests and get the test report.
+    description: The workflow will first clone your Git repository, cache your
+      Gradle dependencies, install Android tools, run your Android unit tests
+      and save the test report.
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - gradle-runner@5:
+        inputs:
+        - gradlew_path: "./gradlew"
+        - gradle_task: test
+    - script@1:
+        inputs:
+        - content: "#!/usr/bin/env bash\n\n            set -euo pipefail\n\n\n\
+              \            : \"${BITRISE_TEST_RESULT_DIR:?must be set by the Bitrise\
+              \ CLI for\n            this step}\"\n\n            : \"${BITRISE_SOURCE_DIR:=$(pwd)}\"\
+              \n\n            cd \"$BITRISE_SOURCE_DIR\"\n\n\n            #\n  \
+              \          -------------------------------------------------------------------\\\
+              \n            --\n\n            # Directory contract (from steps-deploy-to-bitrise-io/test/test.go):\n\
+              \n            #\n\n            #   $BITRISE_TEST_DEPLOY_DIR/        <-\
+              \ root deploy-to-bitrise scans\n\n            #     <step_results_dir>/\
+              \            <- $BITRISE_TEST_RESULT_DIR\n\n            #       step-info.json\
+              \               <- written by Bitrise CLI\n\n            #       <test_run_dir>/\
+              \              <- one per \"test run\" we want\n            shown\n\n\
+              \            #         test-info.json             <- we write this\n\
+              \n            #         *.xml                      <- JUnit XMLs (merged\
+              \ by\n            converter)\n\n            #\n\n            # Grouping:\
+              \ ONE test_run_dir per module. All variants (debug,\n            release,\n\
+              \n            # any flavors) for that module are funneled into the same\
+              \ dir, so\n            the\n\n            # JUnit converter merges every\
+              \ <testsuite> into a single TestReport\n\n            # shown as one\
+              \ entry on the Tests tab.\n\n            #\n\n            # Filename\
+              \ collisions: Gradle emits the same TEST-*.xml filenames\n\n        \
+              \    # across variants (debug + release both produce TEST-Foo.xml), and\n\
+              \            the\n\n            # parser only globs one level deep —\
+              \ so subdirectories per variant\n\n            # wouldn't be read. We\
+              \ prefix each XML with its variant name on\n            copy.\n\n   \
+              \         #\n\n            # Walk scope: find . starts at $BITRISE_SOURCE_DIR.\
+              \ Narrow the start\n\n            # path or -path filter to speed up\
+              \ large monorepos.\n\n            #\n            -------------------------------------------------------------------\\\
+              \n            --\n\n\n            mapfile -t result_dirs < <(\n\n  \
+              \          \\    find . -type d -path \"*/build/test-results/*\" \\\\\n\
+              \n            \\    -not -path \"*/node_modules/*\" \\\\\n\n        \
+              \    \\    | while read -r d; do\n\n            \\        if compgen\
+              \ -G \"$d/*.xml\" > /dev/null; then echo \"$d\";\n            fi\n\n\
+              \            \\        done\n\n            )\n\n\n            if [ ${#result_dirs[@]}\
+              \ -eq 0 ]; then\n\n            \\    echo \"No JUnit XMLs found under\
+              \ any */build/test-results/*\"\n\n            \\    exit 0\n\n      \
+              \      fi\n\n\n            echo \"Found ${#result_dirs[@]} module test-result\
+              \ directories:\"\n\n            printf '  %s\\n' \"${result_dirs[@]}\"\
+              \n\n\n            for dir in \"${result_dirs[@]}\"; do\n\n          \
+              \  \\    # dir example:\n            ./features/login/build/test-results/testDebugUnitTest\n\
+              \n            \\    module_path=\"${dir#./}\"\n\n            \\    module_path=\"\
+              ${module_path%%/build/test-results/*}\"   # e.g.\n            features/login\n\
+              \n            \\    test_task=\"${dir##*/test-results/}\"            \
+              \            # e.g.\n            testDebugUnitTest\n\n            \\\
+              \   \\ \n\n            \\    # Group key = module only (drop the task\
+              \ — variants merge\n            together).\n\n            \\    safe_name=\"\
+              $(echo \"${module_path}\" | tr '/' '-' | tr ' '\n            '_')\"\n\
+              \n            \\    display_name=\":${module_path//\\\\//:}\"\n\n   \
+              \         \\   \\ \n\n            \\    dest=\"$BITRISE_TEST_RESULT_DIR/$safe_name\"\
+              \n\n            \\    mkdir -p \"$dest\"\n\n            \\   \\ \n\n\
+              \            \\    # Write test-info.json once per module (idempotent\
+              \ — same\n            content\n\n            \\    # whether this is\
+              \ the first or fifth variant for the module).\n\n            \\    printf\
+              \ '{\"test-name\":\"%s\"}\\n' \"$display_name\" >\n            \"$dest/test-info.json\"\
+              \n\n            \\   \\ \n\n            \\    # Prefix each XML with\
+              \ the variant to avoid filename collisions\n\n            \\    # across\
+              \ debug/release/flavors. Each becomes a distinct file\n            the\n\
+              \n            \\    # converter parses, then merges into the module's\
+              \ single\n            TestReport.\n\n            \\    for xml in \"\
+              $dir\"/*.xml; do\n\n            \\    base=\"$(basename \"$xml\")\"\n\
+              \n            \\    cp \"$xml\" \"$dest/${test_task}-${base}\"\n\n  \
+              \          \\    done\n\n            \\   \\ \n\n            \\    echo\
+              \ \"  -> Merged $module_path/$test_task into\n            '$display_name'\"\
+              \n\n            done\n\n\n            echo\n\n            echo \"Module\
+              \ groups written:\"\n\n            for d in \"$BITRISE_TEST_RESULT_DIR\"\
+              /*/; do\n\n            \\    [ -d \"$d\" ] || continue\n\n         \
+              \   \\    name=\"$(basename \"$d\")\"\n\n            \\    count=$(find\
+              \ \"$d\" -maxdepth 1 -name '*.xml' | wc -l | tr -d '\n            ')\n\
+              \n            \\    echo \"  - $name ($count XML files)\"\n\n       \
+              \     done"
+        title: Export Test Results
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.4large
+
+  appium_ui_testing:
+    summary: Run Appium UI tests against the Android app.
+    description: Clones the repository, builds a debug APK, starts the Appium
+      server, runs Appium UI tests, and uploads results to Bitrise.
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - restore-gradle-cache@3: {}
+    - android-build@1:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - module: "$MODULE"
+        - variant: "$VARIANT"
+        - cache_level: none
+    - appium-server@0.0.6:
+        inputs:
+        - appium_version: next
+    - gradle-runner@5:
+        inputs:
+        - gradle_task: ":e2e:test"
+        title: Run Appium Tests
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+
+  build_apk:
+    summary: Run your Android unit tests and create an APK file to install your app
+      on a device or share it with your team.
+    description: The workflow will first clone your Git repository, install Android
+      tools, set the project's version code based on the build number, run
+      Android lint and unit tests, build the project's APK file and save it.
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: "$PROJECT_LOCATION/gradlew"
+    - change-android-versioncode-and-versionname@1:
+        inputs:
+        - build_gradle_path: "$PROJECT_LOCATION/$MODULE/build.gradle"
+    - activate-build-cache-for-gradle@2: {}
+    - restore-gradle-cache@3: {}
+    - android-build@1:
+        inputs:
+        - project_location: "$PROJECT_LOCATION"
+        - module: "$MODULE"
+        - variant: "$VARIANT"
+        - cache_level: none
+        - arguments: -Dorg.gradle.jvmargs="-Xmx16g -XX:+HeapDumpOnOutOfMemoryError"
+            --warning-mode=none
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+    meta:
+      bitrise.io:
+        machine_type_id: g2.linux.4large
+
+meta:
+  bitrise.io:
+    stack: linux-docker-android-22.04
+    machine_type_id: standard
+
+app:
+  envs:
+  - PROJECT_LOCATION: "."
+    opts:
+      is_expand: false
+  - MODULE: app
+    opts:
+      is_expand: false
+  - VARIANT: debug
+    opts:
+      is_expand: false
