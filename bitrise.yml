@@ -34,33 +34,31 @@ workflows:
         - content: |-
             #!/usr/bin/env bash
             set -euo pipefail
+            TEST_INTERMEDIATES_DIR="$BITRISE_SOURCE_DIR/test_intermediates"
+            mkdir -p "$TEST_INTERMEDIATES_DIR"
+
             find . -name "*-androidTest.apk" \
               -not -path "*/node_modules/*" \
               | while read -r apk; do
                 base="$(basename "$apk")"
-                cp "$apk" "$BITRISE_DEPLOY_DIR/"
+                cp "$apk" "$TEST_INTERMEDIATES_DIR/"
                 echo "$base"
               done \
-              | LC_ALL=C sort > "$BITRISE_DEPLOY_DIR/test_apks.txt"
+              | LC_ALL=C sort > "$TEST_INTERMEDIATES_DIR/test_apks.txt"
 
-            TEST_APK_COUNT=$(wc -l < "$BITRISE_DEPLOY_DIR/test_apks.txt" | tr -d ' ')
+            TEST_APK_COUNT=$(wc -l < "$TEST_INTERMEDIATES_DIR/test_apks.txt" | tr -d ' ')
             envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
-
-            INTERMEDIATE_FILES="$BITRISE_DEPLOY_DIR/test_apks.txt"
-            while IFS= read -r apk_name; do
-              INTERMEDIATE_FILES="${INTERMEDIATE_FILES}"$'\n'"$BITRISE_DEPLOY_DIR/${apk_name}"
-            done < "$BITRISE_DEPLOY_DIR/test_apks.txt"
-            envman add --key TEST_INTERMEDIATE_FILES --value "$INTERMEDIATE_FILES"
+            envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
 
             echo "Test APKs indexed ($TEST_APK_COUNT):"
-            cat "$BITRISE_DEPLOY_DIR/test_apks.txt"
+            cat "$TEST_INTERMEDIATES_DIR/test_apks.txt"
     - share-pipeline-variable@1:
         inputs:
         - variables: TEST_APK_COUNT=$TEST_APK_COUNT
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2:
         inputs:
-        - pipeline_intermediate_files: "$TEST_INTERMEDIATE_FILES"
+        - pipeline_intermediate_files: "TEST_INTERMEDIATES_DIR"
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
@@ -82,7 +80,7 @@ workflows:
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2:
         inputs:
-        - pipeline_intermediate_files: "$BITRISE_APK_PATH"
+        - pipeline_intermediate_files: "$BITRISE_APK_PATH:DEBUG_APK"
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
@@ -99,8 +97,7 @@ workflows:
         - content: |-
             #!/usr/bin/env bash
             set -euo pipefail
-            APK_INDEX_FILE="$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/test_apks.txt"
-            TEST_APK_NAME=$(sed -n "$((BITRISE_IO_PARALLEL_INDEX + 1))p" "$APK_INDEX_FILE")
+            TEST_APK_NAME=$(sed -n "$((BITRISE_IO_PARALLEL_INDEX + 1))p" "$TEST_INTERMEDIATES_DIR/test_apks.txt")
 
             if [[ -z "$TEST_APK_NAME" ]]; then
               echo "No APK found for index $BITRISE_IO_PARALLEL_INDEX"
@@ -112,8 +109,8 @@ workflows:
     - virtual-device-testing-for-android@1:
         inputs:
         - test_type: instrumentation
-        - app_apk_path: "$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/app-debug.apk"
-        - test_apk_path: "$BITRISEIO_PIPELINE_INTERMEDIATE_FILES_PATH/$TEST_APK_NAME"
+        - app_apk_path: "$DEBUG_APK"
+        - test_apk_path: "$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
     - deploy-to-bitrise-io@2: {}
     meta:
       bitrise.io:
