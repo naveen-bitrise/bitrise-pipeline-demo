@@ -18,7 +18,6 @@ workflows:
   build_androidTest_apk:
     summary: Build instrumentation test APKs for all modules and write an index file.
     steps:
-    - activate-ssh-key@4: {}
     - git-clone@8: {}
     - install-missing-android-tools@3:
         inputs:
@@ -69,7 +68,6 @@ workflows:
   build_debug_apk:
     summary: Build the debug APK.
     steps:
-    - activate-ssh-key@4: {}
     - git-clone@8: {}
     - install-missing-android-tools@3:
         inputs:
