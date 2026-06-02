@@ -38,8 +38,6 @@ workflows:
             mkdir -p "$TEST_INTERMEDIATES_DIR"
 
             find . -name "*-androidTest.apk" \
-              -not -path "*/node_modules/*" \
-              -not -path "*/intermediates/*" \
               | while read -r apk; do
                 base="$(basename "$apk")"
                 cp "$apk" "$TEST_INTERMEDIATES_DIR/"
