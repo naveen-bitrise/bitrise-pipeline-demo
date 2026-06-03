@@ -271,11 +271,18 @@ workflows:
     - wait-for-android-emulator@1: {}
     - appium-server@0.0.6:
         inputs:
-        - appium_version: next
+        - appium_version: "2.11.5"
     - gradle-runner@5:
         inputs:
         - gradle_task: ":e2e:test"
         title: Run Appium Tests
+    - script@1:
+        is_always_run: true
+        title: Export appium.log
+        inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                cp "$BITRISE_SOURCE_DIR/appium.log" "$BITRISE_DEPLOY_DIR/" 2>/dev/null || true
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2: {}
 
