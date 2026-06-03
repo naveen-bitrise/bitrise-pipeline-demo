@@ -273,9 +273,8 @@ workflows:
         title: Install UiAutomator2 driver & start Appium
         inputs:
             - content: |-
-                #!/usr/bin/env bash
                 set -euo pipefail
-                npm install -g appium@2.11.5
+                npm install -g appium@3
                 appium driver install uiautomator2
                 appium driver list --installed
                 nohup appium --log "$BITRISE_SOURCE_DIR/appium.log" --log-level info >/dev/null 2>&1 &
