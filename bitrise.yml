@@ -269,9 +269,22 @@ workflows:
         - abi: x86_64
         - profile: pixel_5
     - wait-for-android-emulator@1: {}
-    - appium-server@0.0.6:
+    - script@1:
+        title: Install UiAutomator2 driver & start Appium
         inputs:
-        - appium_version: "2.11.5"
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                npm install -g appium@2.11.5
+                appium driver install uiautomator2
+                appium driver list --installed
+                nohup appium --log "$BITRISE_SOURCE_DIR/appium.log" --log-level info >/dev/null 2>&1 &
+                for i in $(seq 1 30); do
+                  curl -sf http://127.0.0.1:4723/status >/dev/null && { echo "Appium is up"; exit 0; }
+                  sleep 2
+                done
+                echo "Appium did not become ready" >&2
+                exit 1
     - gradle-runner@5:
         inputs:
         - gradle_task: ":e2e:test"
