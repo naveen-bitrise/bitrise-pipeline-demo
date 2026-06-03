@@ -66,6 +66,10 @@ workflows:
               fi
             done
 
+            if (( bin1_size == 0 )); then
+              touch "$BATCH_1/.keep"
+            fi
+
             envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
             envman add --key TEST_INTERMEDIATES_DIR_0 --value "$BATCH_0"
             envman add --key TEST_INTERMEDIATES_DIR_1 --value "$BATCH_1"
