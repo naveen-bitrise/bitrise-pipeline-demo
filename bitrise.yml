@@ -251,7 +251,6 @@ workflows:
     description: Clones the repository, builds a debug APK, starts the Appium
       server, runs Appium UI tests, and uploads results to Bitrise.
     steps:
-    - activate-ssh-key@4: {}
     - git-clone@8: {}
     - install-missing-android-tools@3:
         inputs:
