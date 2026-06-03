@@ -29,35 +29,55 @@ workflows:
         - gradlew_path: "./gradlew"
         - gradle_task: assembleAndroidTest
     - script@1:
-        title: Collect test APKs and write index
+        title: Collect test APKs and split into two batches
         inputs:
         - content: |-
             #!/usr/bin/env bash
             set -euo pipefail
-            TEST_INTERMEDIATES_DIR="$BITRISE_SOURCE_DIR/test_intermediates"
-            mkdir -p "$TEST_INTERMEDIATES_DIR"
+            BATCH_0="$BITRISE_SOURCE_DIR/test_intermediates_0"
+            BATCH_1="$BITRISE_SOURCE_DIR/test_intermediates_1"
+            mkdir -p "$BATCH_0" "$BATCH_1"
 
-            find . -name "*-androidTest.apk" \
+            SORTED_LIST=$(find . -name "*-androidTest.apk" \
               | while read -r apk; do
-                base="$(basename "$apk")"
-                cp "$apk" "$TEST_INTERMEDIATES_DIR/"
-                echo "$base"
-              done \
-              | LC_ALL=C sort > "$TEST_INTERMEDIATES_DIR/test_apks.txt"
+                  echo "$(basename "$apk"):$apk"
+                done \
+              | LC_ALL=C sort)
 
-            TEST_APK_COUNT=$(wc -l < "$TEST_INTERMEDIATES_DIR/test_apks.txt" | tr -d ' ')
+            TEST_APK_COUNT=$(echo "$SORTED_LIST" | wc -l | tr -d ' ')
+            MID=$(( (TEST_APK_COUNT + 1) / 2 ))
+
+            echo "$SORTED_LIST" | cut -d: -f1 > "$BATCH_0/test_apks.txt"
+
+            i=0
+            while IFS= read -r entry; do
+              base="${entry%%:*}"
+              path="${entry#*:}"
+              if [ "$i" -lt "$MID" ]; then
+                cp "$path" "$BATCH_0/"
+              else
+                cp "$path" "$BATCH_1/"
+              fi
+              i=$((i + 1))
+            done <<< "$SORTED_LIST"
+
             envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
-            envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
+            envman add --key TEST_INTERMEDIATES_DIR_0 --value "$BATCH_0"
+            envman add --key TEST_INTERMEDIATES_DIR_1 --value "$BATCH_1"
 
-            echo "Test APKs indexed ($TEST_APK_COUNT):"
-            cat "$TEST_INTERMEDIATES_DIR/test_apks.txt"
+            echo "Batch 0 ($MID APKs):"
+            ls "$BATCH_0"/*.apk 2>/dev/null | xargs -I{} basename {}
+            echo "Batch 1 ($((TEST_APK_COUNT - MID)) APKs):"
+            ls "$BATCH_1"/*.apk 2>/dev/null | xargs -I{} basename {}
     - share-pipeline-variable@1:
         inputs:
         - variables: TEST_APK_COUNT=$TEST_APK_COUNT
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2:
         inputs:
-        - pipeline_intermediate_files: "TEST_INTERMEDIATES_DIR"
+        - pipeline_intermediate_files: |-
+            TEST_INTERMEDIATES_DIR_0
+            TEST_INTERMEDIATES_DIR_1
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
@@ -91,11 +111,18 @@ workflows:
         inputs:
         - artifact_sources: build_androidTest_apk,build_debug_apk
     - script@1:
-        title: Select test APK by parallel index
+        title: Merge batches and select test APK by parallel index
         inputs:
         - content: |-
             #!/usr/bin/env bash
             set -euo pipefail
+            TEST_INTERMEDIATES_DIR="$BITRISE_SOURCE_DIR/test_intermediates_merged"
+            mkdir -p "$TEST_INTERMEDIATES_DIR"
+
+            cp -r "$TEST_INTERMEDIATES_DIR_0/." "$TEST_INTERMEDIATES_DIR/"
+            find "$TEST_INTERMEDIATES_DIR_1" -name "*.apk" \
+              -exec cp {} "$TEST_INTERMEDIATES_DIR/" \;
+
             TEST_APK_NAME=$(sed -n "$((BITRISE_IO_PARALLEL_INDEX + 1))p" "$TEST_INTERMEDIATES_DIR/test_apks.txt")
 
             if [[ -z "$TEST_APK_NAME" ]]; then
@@ -105,6 +132,7 @@ workflows:
 
             echo "Running tests for: $TEST_APK_NAME"
             envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
+            envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
     - virtual-device-testing-for-android@1:
         inputs:
         - test_type: instrumentation
