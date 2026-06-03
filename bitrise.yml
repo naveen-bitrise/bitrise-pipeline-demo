@@ -274,6 +274,13 @@ workflows:
         inputs:
             - content: |-
                 set -euo pipefail
+
+                # Appium 3 requires Node >= 20.19 / 22.12; stack ships 20.17
+                asdf install nodejs 22.12.0
+                asdf global nodejs 22.12.0
+                asdf reshim nodejs
+                node -v
+                
                 npm install -g appium@3
                 appium driver install uiautomator2
                 appium driver list --installed
