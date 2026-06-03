@@ -51,6 +51,8 @@ workflows:
 
             echo "Test APKs indexed ($TEST_APK_COUNT):"
             cat "$TEST_INTERMEDIATES_DIR/test_apks.txt"
+
+            find "$BITRISE_DEPLOY_DIR" -name "*-androidTest.apk" -delete
     - share-pipeline-variable@1:
         inputs:
         - variables: TEST_APK_COUNT=$TEST_APK_COUNT
