@@ -116,7 +116,7 @@ workflows:
         machine_type_id: g2.linux.4large
 
   run_instrumentation_tests:
-    summary: Run instrumentation tests for one module, selected by $BITRISE_IO_PARALLEL_INDEX.
+    summary: Run instrumentation tests for one module on a Bitrise Android emulator.
     steps:
     - pull-intermediate-files@1:
         inputs:
@@ -141,14 +141,81 @@ workflows:
               exit 1
             fi
 
-            echo "Running tests for: $TEST_APK_NAME"
+            MODULE="${TEST_APK_NAME%-debug-androidTest.apk}"
+            echo "Running tests for module: $MODULE"
             envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
             envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
-    - virtual-device-testing-for-android@1:
+            envman add --key MODULE --value "$MODULE"
+    - avd-manager@1: {}
+    - wait-for-android-emulator@1: {}
+    - script@1:
+        title: Install APKs and run instrumentation tests
         inputs:
-        - test_type: instrumentation
-        - app_path: "$DEBUG_APK"
-        - test_apk_path: "$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
+        - content: |-
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            TEST_APK="$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
+
+            adb install -r -t "$DEBUG_APK"
+            adb install -r -t "$TEST_APK"
+
+            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" -not -name "aapt2" | sort -V | tail -1)
+            TEST_PACKAGE=$("$AAPT" dump badging "$TEST_APK" | grep "^package: name=" | sed "s/.*name='\([^']*\)'.*/\1/")
+            echo "Test package: $TEST_PACKAGE"
+
+            export MODULE
+            export RESULT_DIR="$BITRISE_TEST_RESULT_DIR/$MODULE"
+            mkdir -p "$RESULT_DIR"
+            printf '{"test-name":":%s"}\n' "$MODULE" > "$RESULT_DIR/test-info.json"
+
+            set +e
+            adb shell am instrument -w -r \
+              "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" \
+              > /tmp/am_output.txt 2>&1
+            AM_EXIT=$?
+            set -e
+
+            cat /tmp/am_output.txt
+
+            python3 - << 'PYEOF'
+            import os, re
+
+            output = open('/tmp/am_output.txt').read()
+            result_dir = os.environ['RESULT_DIR']
+            module = os.environ['MODULE']
+
+            cases, cur = [], {}
+            for line in output.splitlines():
+                if line.startswith('INSTRUMENTATION_STATUS: class='):
+                    cur['class'] = line.split('=', 1)[1].strip()
+                elif line.startswith('INSTRUMENTATION_STATUS: test='):
+                    cur['test'] = line.split('=', 1)[1].strip()
+                elif line.startswith('INSTRUMENTATION_STATUS: stack='):
+                    cur.setdefault('stack', []).append(line.split('=', 1)[1].strip())
+                elif re.match(r'INSTRUMENTATION_STATUS_CODE: ', line):
+                    code = int(line.split(': ', 1)[1])
+                    if code in (0, -1, -2):
+                        cases.append(dict(cur, code=code))
+                        cur = {}
+
+            failures = sum(1 for c in cases if c['code'] != 0)
+            xml = ['<?xml version="1.0" encoding="UTF-8"?>',
+                   f'<testsuite name="{module}" tests="{len(cases)}" failures="{failures}">']
+            for c in cases:
+                xml.append(f'  <testcase classname="{c.get("class","")}" name="{c.get("test","")}">')
+                if c['code'] != 0:
+                    stack = ' '.join(c.get('stack', []))
+                    xml.append(f'    <failure><![CDATA[{stack}]]></failure>')
+                xml.append('  </testcase>')
+            xml.append('</testsuite>')
+
+            out = f'{result_dir}/TEST-results.xml'
+            open(out, 'w').write('\n'.join(xml))
+            print(f'Written {len(cases)} results ({failures} failures) -> {out}')
+            PYEOF
+
+            exit $AM_EXIT
     - deploy-to-bitrise-io@2: {}
     meta:
       bitrise.io:
