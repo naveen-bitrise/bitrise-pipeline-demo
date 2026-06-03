@@ -1,8 +1,7 @@
 ---
-format_version: "25"
+format_version: '25'
 default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
 project_type: android
-
 pipelines:
   run_ui_tests:
     workflows:
@@ -12,8 +11,7 @@ pipelines:
         depends_on:
         - build_androidTest_apk
         - build_debug_apk
-        parallel: $TEST_APK_COUNT
-
+        parallel: "$TEST_APK_COUNT"
 workflows:
   build_androidTest_apk:
     summary: Build instrumentation test APKs for all modules and write an index file.
@@ -92,7 +90,6 @@ workflows:
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
-
   build_debug_apk:
     summary: Build the debug APK.
     steps:
@@ -114,7 +111,6 @@ workflows:
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
-
   run_instrumentation_tests:
     summary: Run instrumentation tests for one module on a Bitrise Android emulator.
     steps:
@@ -146,7 +142,7 @@ workflows:
             envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
             envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
             envman add --key MODULE --value "$MODULE"
-    - avd-manager@1: {}
+    - avd-manager@2: {}
     - wait-for-android-emulator@1: {}
     - script@1:
         title: Install APKs and run instrumentation tests
@@ -220,7 +216,6 @@ workflows:
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
-
   run_unit_tests:
     summary: Run your Android unit tests and get the test report.
     description: The workflow will first clone your Git repository, cache your
@@ -238,81 +233,322 @@ workflows:
         - gradle_task: test
     - script@1:
         inputs:
-        - content: "#!/usr/bin/env bash\n\n            set -euo pipefail\n\n\n\
-              \            : \"${BITRISE_TEST_RESULT_DIR:?must be set by the Bitrise\
-              \ CLI for\n            this step}\"\n\n            : \"${BITRISE_SOURCE_DIR:=$(pwd)}\"\
-              \n\n            cd \"$BITRISE_SOURCE_DIR\"\n\n\n            #\n  \
-              \          -------------------------------------------------------------------\\\
-              \n            --\n\n            # Directory contract (from steps-deploy-to-bitrise-io/test/test.go):\n\
-              \n            #\n\n            #   $BITRISE_TEST_DEPLOY_DIR/        <-\
-              \ root deploy-to-bitrise scans\n\n            #     <step_results_dir>/\
-              \            <- $BITRISE_TEST_RESULT_DIR\n\n            #       step-info.json\
-              \               <- written by Bitrise CLI\n\n            #       <test_run_dir>/\
-              \              <- one per \"test run\" we want\n            shown\n\n\
-              \            #         test-info.json             <- we write this\n\
-              \n            #         *.xml                      <- JUnit XMLs (merged\
-              \ by\n            converter)\n\n            #\n\n            # Grouping:\
-              \ ONE test_run_dir per module. All variants (debug,\n            release,\n\
-              \n            # any flavors) for that module are funneled into the same\
-              \ dir, so\n            the\n\n            # JUnit converter merges every\
-              \ <testsuite> into a single TestReport\n\n            # shown as one\
-              \ entry on the Tests tab.\n\n            #\n\n            # Filename\
-              \ collisions: Gradle emits the same TEST-*.xml filenames\n\n        \
-              \    # across variants (debug + release both produce TEST-Foo.xml), and\n\
-              \            the\n\n            # parser only globs one level deep —\
-              \ so subdirectories per variant\n\n            # wouldn't be read. We\
-              \ prefix each XML with its variant name on\n            copy.\n\n   \
-              \         #\n\n            # Walk scope: find . starts at $BITRISE_SOURCE_DIR.\
-              \ Narrow the start\n\n            # path or -path filter to speed up\
-              \ large monorepos.\n\n            #\n            -------------------------------------------------------------------\\\
-              \n            --\n\n\n            mapfile -t result_dirs < <(\n\n  \
-              \          \\    find . -type d -path \"*/build/test-results/*\" \\\\\n\
-              \n            \\    -not -path \"*/node_modules/*\" \\\\\n\n        \
-              \    \\    | while read -r d; do\n\n            \\        if compgen\
-              \ -G \"$d/*.xml\" > /dev/null; then echo \"$d\";\n            fi\n\n\
-              \            \\        done\n\n            )\n\n\n            if [ ${#result_dirs[@]}\
-              \ -eq 0 ]; then\n\n            \\    echo \"No JUnit XMLs found under\
-              \ any */build/test-results/*\"\n\n            \\    exit 0\n\n      \
-              \      fi\n\n\n            echo \"Found ${#result_dirs[@]} module test-result\
-              \ directories:\"\n\n            printf '  %s\\n' \"${result_dirs[@]}\"\
-              \n\n\n            for dir in \"${result_dirs[@]}\"; do\n\n          \
-              \  \\    # dir example:\n            ./features/login/build/test-results/testDebugUnitTest\n\
-              \n            \\    module_path=\"${dir#./}\"\n\n            \\    module_path=\"\
-              ${module_path%%/build/test-results/*}\"   # e.g.\n            features/login\n\
-              \n            \\    test_task=\"${dir##*/test-results/}\"            \
-              \            # e.g.\n            testDebugUnitTest\n\n            \\\
-              \   \\ \n\n            \\    # Group key = module only (drop the task\
-              \ — variants merge\n            together).\n\n            \\    safe_name=\"\
-              $(echo \"${module_path}\" | tr '/' '-' | tr ' '\n            '_')\"\n\
-              \n            \\    display_name=\":${module_path//\\\\//:}\"\n\n   \
-              \         \\   \\ \n\n            \\    dest=\"$BITRISE_TEST_RESULT_DIR/$safe_name\"\
-              \n\n            \\    mkdir -p \"$dest\"\n\n            \\   \\ \n\n\
-              \            \\    # Write test-info.json once per module (idempotent\
-              \ — same\n            content\n\n            \\    # whether this is\
-              \ the first or fifth variant for the module).\n\n            \\    printf\
-              \ '{\"test-name\":\"%s\"}\\n' \"$display_name\" >\n            \"$dest/test-info.json\"\
-              \n\n            \\   \\ \n\n            \\    # Prefix each XML with\
-              \ the variant to avoid filename collisions\n\n            \\    # across\
-              \ debug/release/flavors. Each becomes a distinct file\n            the\n\
-              \n            \\    # converter parses, then merges into the module's\
-              \ single\n            TestReport.\n\n            \\    for xml in \"\
-              $dir\"/*.xml; do\n\n            \\    base=\"$(basename \"$xml\")\"\n\
-              \n            \\    cp \"$xml\" \"$dest/${test_task}-${base}\"\n\n  \
-              \          \\    done\n\n            \\   \\ \n\n            \\    echo\
-              \ \"  -> Merged $module_path/$test_task into\n            '$display_name'\"\
-              \n\n            done\n\n\n            echo\n\n            echo \"Module\
-              \ groups written:\"\n\n            for d in \"$BITRISE_TEST_RESULT_DIR\"\
-              /*/; do\n\n            \\    [ -d \"$d\" ] || continue\n\n         \
-              \   \\    name=\"$(basename \"$d\")\"\n\n            \\    count=$(find\
-              \ \"$d\" -maxdepth 1 -name '*.xml' | wc -l | tr -d '\n            ')\n\
-              \n            \\    echo \"  - $name ($count XML files)\"\n\n       \
-              \     done"
+        - content: "#!/usr/bin/env bash
+
+
+            \            set -euo pipefail
+
+
+
+            \            : \"${BITRISE_TEST_RESULT_DIR:?must be set by the
+            Bitrise CLI for
+
+            \            this step}\"
+
+
+            \            : \"${BITRISE_SOURCE_DIR:=$(pwd)}\"
+
+
+            \            cd \"$BITRISE_SOURCE_DIR\"
+
+
+
+            \            #
+
+            \            ------------------------------------------------------\
+            -------------\\
+
+            \            --
+
+
+            \            # Directory contract (from
+            steps-deploy-to-bitrise-io/test/test.go):
+
+
+            \            #
+
+
+            \            #   $BITRISE_TEST_DEPLOY_DIR/        <- root
+            deploy-to-bitrise scans
+
+
+            \            #     <step_results_dir>/            <-
+            $BITRISE_TEST_RESULT_DIR
+
+
+            \            #       step-info.json               <- written by
+            Bitrise CLI
+
+
+            \            #       <test_run_dir>/              <- one per \"test
+            run\" we want
+
+            \            shown
+
+
+            \            #         test-info.json             <- we write this
+
+
+            \            #         *.xml                      <- JUnit XMLs
+            (merged by
+
+            \            converter)
+
+
+            \            #
+
+
+            \            # Grouping: ONE test_run_dir per module. All variants
+            (debug,
+
+            \            release,
+
+
+            \            # any flavors) for that module are funneled into the
+            same dir, so
+
+            \            the
+
+
+            \            # JUnit converter merges every <testsuite> into a
+            single TestReport
+
+
+            \            # shown as one entry on the Tests tab.
+
+
+            \            #
+
+
+            \            # Filename collisions: Gradle emits the same TEST-*.xml
+            filenames
+
+
+            \            # across variants (debug + release both produce
+            TEST-Foo.xml), and
+
+            \            the
+
+
+            \            # parser only globs one level deep — so subdirectories
+            per variant
+
+
+            \            # wouldn't be read. We prefix each XML with its variant
+            name on
+
+            \            copy.
+
+
+            \            #
+
+
+            \            # Walk scope: find . starts at $BITRISE_SOURCE_DIR.
+            Narrow the start
+
+
+            \            # path or -path filter to speed up large monorepos.
+
+
+            \            #
+
+            \            ------------------------------------------------------\
+            -------------\\
+
+            \            --
+
+
+
+            \            mapfile -t result_dirs < <(
+
+
+            \            \\    find . -type d -path \"*/build/test-results/*\"
+            \\\\
+
+
+            \            \\    -not -path \"*/node_modules/*\" \\\\
+
+
+            \            \\    | while read -r d; do
+
+
+            \            \\        if compgen -G \"$d/*.xml\" > /dev/null; then
+            echo \"$d\";
+
+            \            fi
+
+
+            \            \\        done
+
+
+            \            )
+
+
+
+            \            if [ ${#result_dirs[@]} -eq 0 ]; then
+
+
+            \            \\    echo \"No JUnit XMLs found under any
+            */build/test-results/*\"
+
+
+            \            \\    exit 0
+
+
+            \            fi
+
+
+
+            \            echo \"Found ${#result_dirs[@]} module test-result
+            directories:\"
+
+
+            \            printf '  %s\\n' \"${result_dirs[@]}\"
+
+
+
+            \            for dir in \"${result_dirs[@]}\"; do
+
+
+            \            \\    # dir example:
+
+            \            ./features/login/build/test-results/testDebugUnitTest
+
+
+            \            \\    module_path=\"${dir#./}\"
+
+
+            \            \\    module_path=\"${module_path%%/build/test-results\
+            /*}\"   # e.g.
+
+            \            features/login
+
+
+            \            \\    test_task=\"${dir##*/test-results/}\"                        \
+            # e.g.
+
+            \            testDebugUnitTest
+
+
+            \            \\   \\\ 
+
+
+            \            \\    # Group key = module only (drop the task —
+            variants merge
+
+            \            together).
+
+
+            \            \\    safe_name=\"$(echo \"${module_path}\" | tr '/'
+            '-' | tr ' '
+
+            \            '_')\"
+
+
+            \            \\    display_name=\":${module_path//\\\\//:}\"
+
+
+            \            \\   \\\ 
+
+
+            \            \\    dest=\"$BITRISE_TEST_RESULT_DIR/$safe_name\"
+
+
+            \            \\    mkdir -p \"$dest\"
+
+
+            \            \\   \\\ 
+
+
+            \            \\    # Write test-info.json once per module
+            (idempotent — same
+
+            \            content
+
+
+            \            \\    # whether this is the first or fifth variant for
+            the module).
+
+
+            \            \\    printf '{\"test-name\":\"%s\"}\\n'
+            \"$display_name\" >
+
+            \            \"$dest/test-info.json\"
+
+
+            \            \\   \\\ 
+
+
+            \            \\    # Prefix each XML with the variant to avoid
+            filename collisions
+
+
+            \            \\    # across debug/release/flavors. Each becomes a
+            distinct file
+
+            \            the
+
+
+            \            \\    # converter parses, then merges into the module's
+            single
+
+            \            TestReport.
+
+
+            \            \\    for xml in \"$dir\"/*.xml; do
+
+
+            \            \\    base=\"$(basename \"$xml\")\"
+
+
+            \            \\    cp \"$xml\" \"$dest/${test_task}-${base}\"
+
+
+            \            \\    done
+
+
+            \            \\   \\\ 
+
+
+            \            \\    echo \"  -> Merged $module_path/$test_task into
+
+            \            '$display_name'\"
+
+
+            \            done
+
+
+
+            \            echo
+
+
+            \            echo \"Module groups written:\"
+
+
+            \            for d in \"$BITRISE_TEST_RESULT_DIR\"/*/; do
+
+
+            \            \\    [ -d \"$d\" ] || continue
+
+
+            \            \\    name=\"$(basename \"$d\")\"
+
+
+            \            \\    count=$(find \"$d\" -maxdepth 1 -name '*.xml' |
+            wc -l | tr -d '
+
+            \            ')
+
+
+            \            \\    echo \"  - $name ($count XML files)\"
+
+
+            \            done"
         title: Export Test Results
     - deploy-to-bitrise-io@2: {}
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
-
   appium_ui_testing:
     summary: Run Appium UI tests against the Android app.
     description: Clones the repository, builds a debug APK, starts the Appium
@@ -338,7 +574,6 @@ workflows:
         title: Run Appium Tests
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2: {}
-
   build_apk:
     summary: Run your Android unit tests and create an APK file to install your app
       on a device or share it with your team.
@@ -369,12 +604,10 @@ workflows:
     meta:
       bitrise.io:
         machine_type_id: g2.linux.4large
-
 meta:
   bitrise.io:
     stack: linux-docker-android-22.04
     machine_type_id: standard
-
 app:
   envs:
   - PROJECT_LOCATION: "."
