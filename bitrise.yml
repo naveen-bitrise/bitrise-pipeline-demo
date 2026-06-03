@@ -214,6 +214,9 @@ workflows:
                     xml.append('    <skipped/>')
                 xml.append('  </testcase>')
             xml.append('</testsuite>')
+            os.makedirs(result_dir, exist_ok=True)
+            with open(f'{result_dir}/test-info.json', 'w') as f:
+                f.write(f'{{"test-name":"{module}"}}\n')
             open(f'{result_dir}/TEST-results.xml', 'w').write('\n'.join(xml))
             print(f'{module}: {len(cases)} tests, {failures} failures, {skipped} skipped')
             sys.exit(1 if failures > 0 else 0)
