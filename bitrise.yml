@@ -11,7 +11,7 @@ pipelines:
         depends_on:
         - build_androidTest_apk
         - build_debug_apk
-        parallel: "$TEST_APK_COUNT"
+        parallel: "$TEST_SHARD_COUNT"
 workflows:
   build_androidTest_apk:
     summary: Build instrumentation test APKs for all modules and write an index file.
@@ -68,7 +68,9 @@ workflows:
               touch "$BATCH_1/.keep"
             fi
 
+            TEST_SHARD_COUNT=$(( (TEST_APK_COUNT + 1) / 2 ))
             envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
+            envman add --key TEST_SHARD_COUNT --value "$TEST_SHARD_COUNT"
             envman add --key TEST_INTERMEDIATES_DIR_0 --value "$BATCH_0"
             envman add --key TEST_INTERMEDIATES_DIR_1 --value "$BATCH_1"
 
@@ -80,7 +82,7 @@ workflows:
             find "$BITRISE_DEPLOY_DIR" -name "*-androidTest.apk" -delete
     - share-pipeline-variable@1:
         inputs:
-        - variables: TEST_APK_COUNT=$TEST_APK_COUNT
+        - variables: TEST_SHARD_COUNT=$TEST_SHARD_COUNT
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2:
         inputs:
@@ -118,7 +120,7 @@ workflows:
         inputs:
         - artifact_sources: build_androidTest_apk,build_debug_apk
     - script@1:
-        title: Merge batches and select test APK by parallel index
+        title: Merge batches and select test APKs by parallel index
         inputs:
         - content: |-
             #!/usr/bin/env bash
@@ -130,18 +132,21 @@ workflows:
             find "$TEST_INTERMEDIATES_DIR_1" -name "*.apk" \
               -exec cp {} "$TEST_INTERMEDIATES_DIR/" \;
 
-            TEST_APK_NAME=$(sed -n "$((BITRISE_IO_PARALLEL_INDEX + 1))p" "$TEST_INTERMEDIATES_DIR/test_apks.txt")
+            LINE_A=$(( BITRISE_IO_PARALLEL_INDEX * 2 + 1 ))
+            LINE_B=$(( BITRISE_IO_PARALLEL_INDEX * 2 + 2 ))
 
-            if [[ -z "$TEST_APK_NAME" ]]; then
-              echo "No APK found for index $BITRISE_IO_PARALLEL_INDEX"
+            TEST_APK_A=$(sed -n "${LINE_A}p" "$TEST_INTERMEDIATES_DIR/test_apks.txt")
+            TEST_APK_B=$(sed -n "${LINE_B}p" "$TEST_INTERMEDIATES_DIR/test_apks.txt")
+
+            if [[ -z "$TEST_APK_A" ]]; then
+              echo "No APK found for shard $BITRISE_IO_PARALLEL_INDEX"
               exit 1
             fi
 
-            MODULE="${TEST_APK_NAME%-debug-androidTest.apk}"
-            echo "Running tests for module: $MODULE"
-            envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
+            echo "Shard $BITRISE_IO_PARALLEL_INDEX: $TEST_APK_A${TEST_APK_B:+ and $TEST_APK_B}"
             envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
-            envman add --key MODULE --value "$MODULE"
+            envman add --key TEST_APK_A --value "$TEST_APK_A"
+            envman add --key TEST_APK_B --value "$TEST_APK_B"
     - avd-manager@2:
         inputs:
         - api_level: "33"
@@ -154,13 +159,8 @@ workflows:
             #!/usr/bin/env bash
             set -euo pipefail
 
-            : "${MODULE:?MODULE env var must be set}"
-
-            TEST_APK="$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
-
-            # Both APKs were built on different machines with different debug
-            # keystores. Resign both with a single local keystore so signatures match.
             APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name "apksigner" | sort -V | tail -1)
+            AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -1)
             KEYSTORE="$HOME/.android/debug.keystore"
             mkdir -p "$HOME/.android"
             if [ ! -f "$KEYSTORE" ]; then
@@ -170,56 +170,29 @@ workflows:
                 -dname "CN=Android Debug,O=Android,C=US"
             fi
 
-            SIGNED_DEBUG="/tmp/debug_resigned.apk"
-            SIGNED_TEST="/tmp/test_resigned.apk"
-            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android \
-              --ks-key-alias androiddebugkey --key-pass pass:android \
-              --out "$SIGNED_DEBUG" "$DEBUG_APK"
-            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android \
-              --ks-key-alias androiddebugkey --key-pass pass:android \
-              --out "$SIGNED_TEST" "$TEST_APK"
+            sign() {
+              "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android \
+                --ks-key-alias androiddebugkey --key-pass pass:android \
+                --out "$2" "$1"
+            }
 
-            adb install -r -t "$SIGNED_DEBUG"
-            adb install -r -t "$SIGNED_TEST"
+            sign "$DEBUG_APK" /tmp/debug_resigned.apk
+            adb install -r -t /tmp/debug_resigned.apk
 
-            AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -1)
-            TEST_PACKAGE=$("$AAPT2" dump packagename "$TEST_APK")
-            echo "Test package: $TEST_PACKAGE"
-
-            export MODULE
-            export RESULT_DIR="$BITRISE_TEST_RESULT_DIR/$MODULE"
-            mkdir -p "$RESULT_DIR"
-            printf '{"test-name":"%s"}\n' "$MODULE" > "$RESULT_DIR/test-info.json"
-
-            adb shell am instrument -w -r \
-              "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" \
-              > /tmp/am_output.txt 2>&1 || true
-
-            if [ ! -s /tmp/am_output.txt ]; then
-              echo "ERROR: am instrument produced no output — device may be offline" >&2
-              exit 1
-            fi
-
-            cat /tmp/am_output.txt
-
-            python3 - << 'PYEOF'
+            # Write the Python result parser once
+            cat > /tmp/parse_results.py << 'PYEOF'
             import os, re, sys
-
-            output = open('/tmp/am_output.txt').read()
+            output = open(os.environ['AM_OUTPUT']).read()
             result_dir = os.environ['RESULT_DIR']
             module = os.environ['MODULE']
-
             cases, cur, in_stack = [], {}, False
             for line in output.splitlines():
                 if line.startswith('INSTRUMENTATION_STATUS: class='):
-                    cur['class'] = line.split('=', 1)[1].strip()
-                    in_stack = False
+                    cur['class'] = line.split('=', 1)[1].strip(); in_stack = False
                 elif line.startswith('INSTRUMENTATION_STATUS: test='):
-                    cur['test'] = line.split('=', 1)[1].strip()
-                    in_stack = False
+                    cur['test'] = line.split('=', 1)[1].strip(); in_stack = False
                 elif line.startswith('INSTRUMENTATION_STATUS: stack='):
-                    cur['stack'] = [line.split('=', 1)[1].strip()]
-                    in_stack = True
+                    cur['stack'] = [line.split('=', 1)[1].strip()]; in_stack = True
                 elif in_stack and not line.startswith('INSTRUMENTATION_STATUS'):
                     cur['stack'].append(line)
                 elif line.startswith('INSTRUMENTATION_STATUS:'):
@@ -227,10 +200,8 @@ workflows:
                 elif re.match(r'INSTRUMENTATION_STATUS_CODE: ', line):
                     code = int(line.split(': ', 1)[1])
                     if code in (0, -1, -2, -3):
-                        cases.append(dict(cur, code=code))
-                        cur = {}
+                        cases.append(dict(cur, code=code)); cur = {}
                     in_stack = False
-
             failures = sum(1 for c in cases if c['code'] in (-1, -2))
             skipped = sum(1 for c in cases if c['code'] == -3)
             xml = ['<?xml version="1.0" encoding="UTF-8"?>',
@@ -238,18 +209,49 @@ workflows:
             for c in cases:
                 xml.append(f'  <testcase classname="{c.get("class","")}" name="{c.get("test","")}">')
                 if c['code'] in (-1, -2):
-                    stack = '\n'.join(c.get('stack', []))
-                    xml.append(f'    <failure><![CDATA[{stack}]]></failure>')
+                    xml.append(f'    <failure><![CDATA[{chr(10).join(c.get("stack",[]))}]]></failure>')
                 elif c['code'] == -3:
                     xml.append('    <skipped/>')
                 xml.append('  </testcase>')
             xml.append('</testsuite>')
-
-            out = f'{result_dir}/TEST-results.xml'
-            open(out, 'w').write('\n'.join(xml))
-            print(f'Written {len(cases)} results ({failures} failures, {skipped} skipped) -> {out}')
+            open(f'{result_dir}/TEST-results.xml', 'w').write('\n'.join(xml))
+            print(f'{module}: {len(cases)} tests, {failures} failures, {skipped} skipped')
             sys.exit(1 if failures > 0 else 0)
             PYEOF
+
+            run_module() {
+              local apk_name="$1"
+              local module="${apk_name%-debug-androidTest.apk}"
+              local test_apk="$TEST_INTERMEDIATES_DIR/$apk_name"
+
+              echo "--- $module ---"
+              sign "$test_apk" "/tmp/${module}_resigned.apk"
+              adb install -r -t "/tmp/${module}_resigned.apk"
+
+              local am_output="/tmp/am_output_${module}.txt"
+              "$AAPT2" dump packagename "$test_apk" \
+                | xargs -I{} adb shell am instrument -w -r \
+                    {}/androidx.test.runner.AndroidJUnitRunner \
+                > "$am_output" 2>&1 || true
+
+              if [ ! -s "$am_output" ]; then
+                echo "ERROR: am instrument produced no output for $module" >&2
+                return 1
+              fi
+              cat "$am_output"
+
+              MODULE="$module" \
+              RESULT_DIR="$BITRISE_TEST_RESULT_DIR/$module" \
+              AM_OUTPUT="$am_output" \
+                python3 /tmp/parse_results.py
+            }
+
+            mkdir -p "$BITRISE_TEST_RESULT_DIR"
+            overall_exit=0
+            for apk in "$TEST_APK_A" ${TEST_APK_B:+"$TEST_APK_B"}; do
+              run_module "$apk" || overall_exit=1
+            done
+            exit $overall_exit
     - deploy-to-bitrise-io@2: {}
     meta:
       bitrise.io:
