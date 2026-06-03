@@ -158,8 +158,29 @@ workflows:
 
             TEST_APK="$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
 
-            adb install -r -t "$DEBUG_APK"
-            adb install -r -t "$TEST_APK"
+            # Both APKs were built on different machines with different debug
+            # keystores. Resign both with a single local keystore so signatures match.
+            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name "apksigner" | sort -V | tail -1)
+            KEYSTORE="$HOME/.android/debug.keystore"
+            mkdir -p "$HOME/.android"
+            if [ ! -f "$KEYSTORE" ]; then
+              keytool -genkeypair -v -keystore "$KEYSTORE" \
+                -storepass android -alias androiddebugkey -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+
+            SIGNED_DEBUG="/tmp/debug_resigned.apk"
+            SIGNED_TEST="/tmp/test_resigned.apk"
+            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android \
+              --ks-key-alias androiddebugkey --key-pass pass:android \
+              --out "$SIGNED_DEBUG" "$DEBUG_APK"
+            "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:android \
+              --ks-key-alias androiddebugkey --key-pass pass:android \
+              --out "$SIGNED_TEST" "$TEST_APK"
+
+            adb install -r -t "$SIGNED_DEBUG"
+            adb install -r -t "$SIGNED_TEST"
 
             AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -1)
             TEST_PACKAGE=$("$AAPT2" dump packagename "$TEST_APK")
