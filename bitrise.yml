@@ -265,6 +265,8 @@ workflows:
     - avd-manager@1:
         inputs:
         - api_level: "34"
+        - tag: google_apis
+        - abi: x86_64
         - profile: pixel_5
     - wait-for-android-emulator@1: {}
     - appium-server@0.0.6:
