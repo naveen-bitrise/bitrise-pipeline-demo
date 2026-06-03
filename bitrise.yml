@@ -262,6 +262,11 @@ workflows:
         - module: "$MODULE"
         - variant: "$VARIANT"
         - cache_level: none
+    - avd-manager@1:
+        inputs:
+        - api_level: "34"
+        - profile: pixel_5
+    - wait-for-android-emulator@1: {}
     - appium-server@0.0.6:
         inputs:
         - appium_version: next
