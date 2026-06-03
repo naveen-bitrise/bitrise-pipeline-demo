@@ -280,7 +280,7 @@ workflows:
                 asdf global nodejs 22.12.0
                 asdf reshim nodejs
                 node -v
-                
+
                 npm install -g appium@3
                 appium driver install uiautomator2
                 appium driver list --installed
@@ -302,6 +302,23 @@ workflows:
             - content: |-
                 #!/usr/bin/env bash
                 cp "$BITRISE_SOURCE_DIR/appium.log" "$BITRISE_DEPLOY_DIR/" 2>/dev/null || true
+    - script@1:
+        is_always_run: true
+        title: Export Appium test results
+        inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                : "${BITRISE_TEST_RESULT_DIR:?set by Bitrise CLI}"
+                SRC="$BITRISE_SOURCE_DIR/e2e/build/test-results/test"
+                if ! compgen -G "$SRC/*.xml" >/dev/null; then
+                  echo "No JUnit XMLs found at $SRC"; exit 0
+                fi
+                DEST="$BITRISE_TEST_RESULT_DIR/e2e"
+                mkdir -p "$DEST"
+                printf '{"test-name":":e2e Appium UI Tests"}\n' > "$DEST/test-info.json"
+                cp "$SRC"/*.xml "$DEST/"
+                echo "Exported $(ls "$DEST"/*.xml | wc -l) result file(s)"
     - save-gradle-cache@1: {}
     - deploy-to-bitrise-io@2: {}
 
