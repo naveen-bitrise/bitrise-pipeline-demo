@@ -151,67 +151,81 @@ workflows:
             #!/usr/bin/env bash
             set -euo pipefail
 
+            : "${MODULE:?MODULE env var must be set}"
+
             TEST_APK="$TEST_INTERMEDIATES_DIR/$TEST_APK_NAME"
 
             adb install -r -t "$DEBUG_APK"
             adb install -r -t "$TEST_APK"
 
-            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" -not -name "aapt2" | sort -V | tail -1)
-            TEST_PACKAGE=$("$AAPT" dump badging "$TEST_APK" | grep "^package: name=" | sed "s/.*name='\([^']*\)'.*/\1/")
+            AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -1)
+            TEST_PACKAGE=$("$AAPT2" dump badging "$TEST_APK" | grep "^package: name=" | sed "s/.*name='\([^']*\)'.*/\1/")
             echo "Test package: $TEST_PACKAGE"
 
             export MODULE
             export RESULT_DIR="$BITRISE_TEST_RESULT_DIR/$MODULE"
             mkdir -p "$RESULT_DIR"
-            printf '{"test-name":":%s"}\n' "$MODULE" > "$RESULT_DIR/test-info.json"
+            printf '{"test-name":"%s"}\n' "$MODULE" > "$RESULT_DIR/test-info.json"
 
-            set +e
             adb shell am instrument -w -r \
               "$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner" \
-              > /tmp/am_output.txt 2>&1
-            AM_EXIT=$?
-            set -e
+              > /tmp/am_output.txt 2>&1 || true
+
+            if [ ! -s /tmp/am_output.txt ]; then
+              echo "ERROR: am instrument produced no output — device may be offline" >&2
+              exit 1
+            fi
 
             cat /tmp/am_output.txt
 
             python3 - << 'PYEOF'
-            import os, re
+            import os, re, sys
 
             output = open('/tmp/am_output.txt').read()
             result_dir = os.environ['RESULT_DIR']
             module = os.environ['MODULE']
 
-            cases, cur = [], {}
+            cases, cur, in_stack = [], {}, False
             for line in output.splitlines():
                 if line.startswith('INSTRUMENTATION_STATUS: class='):
                     cur['class'] = line.split('=', 1)[1].strip()
+                    in_stack = False
                 elif line.startswith('INSTRUMENTATION_STATUS: test='):
                     cur['test'] = line.split('=', 1)[1].strip()
+                    in_stack = False
                 elif line.startswith('INSTRUMENTATION_STATUS: stack='):
-                    cur.setdefault('stack', []).append(line.split('=', 1)[1].strip())
+                    cur['stack'] = [line.split('=', 1)[1].strip()]
+                    in_stack = True
+                elif in_stack and not line.startswith('INSTRUMENTATION_STATUS'):
+                    cur['stack'].append(line)
+                elif line.startswith('INSTRUMENTATION_STATUS:'):
+                    in_stack = False
                 elif re.match(r'INSTRUMENTATION_STATUS_CODE: ', line):
                     code = int(line.split(': ', 1)[1])
-                    if code in (0, -1, -2):
+                    if code in (0, -1, -2, -3):
                         cases.append(dict(cur, code=code))
                         cur = {}
+                    in_stack = False
 
-            failures = sum(1 for c in cases if c['code'] != 0)
+            failures = sum(1 for c in cases if c['code'] in (-1, -2))
+            skipped = sum(1 for c in cases if c['code'] == -3)
             xml = ['<?xml version="1.0" encoding="UTF-8"?>',
-                   f'<testsuite name="{module}" tests="{len(cases)}" failures="{failures}">']
+                   f'<testsuite name="{module}" tests="{len(cases)}" failures="{failures}" skipped="{skipped}">']
             for c in cases:
                 xml.append(f'  <testcase classname="{c.get("class","")}" name="{c.get("test","")}">')
-                if c['code'] != 0:
-                    stack = ' '.join(c.get('stack', []))
+                if c['code'] in (-1, -2):
+                    stack = '\n'.join(c.get('stack', []))
                     xml.append(f'    <failure><![CDATA[{stack}]]></failure>')
+                elif c['code'] == -3:
+                    xml.append('    <skipped/>')
                 xml.append('  </testcase>')
             xml.append('</testsuite>')
 
             out = f'{result_dir}/TEST-results.xml'
             open(out, 'w').write('\n'.join(xml))
-            print(f'Written {len(cases)} results ({failures} failures) -> {out}')
+            print(f'Written {len(cases)} results ({failures} failures, {skipped} skipped) -> {out}')
+            sys.exit(1 if failures > 0 else 0)
             PYEOF
-
-            exit $AM_EXIT
     - deploy-to-bitrise-io@2: {}
     meta:
       bitrise.io:
