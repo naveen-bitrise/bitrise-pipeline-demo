@@ -34,41 +34,46 @@ workflows:
         - content: |-
             #!/usr/bin/env bash
             set -euo pipefail
+            LIMIT=$((2 * 1024 * 1024 * 1024))
             BATCH_0="$BITRISE_SOURCE_DIR/test_intermediates_0"
             BATCH_1="$BITRISE_SOURCE_DIR/test_intermediates_1"
             mkdir -p "$BATCH_0" "$BATCH_1"
 
-            SORTED_LIST=$(find . -name "*-androidTest.apk" \
-              | while read -r apk; do
-                  echo "$(basename "$apk"):$apk"
-                done \
-              | LC_ALL=C sort)
+            # Collect APKs with sizes, sort largest-first (FFD bin packing)
+            mapfile -t entries < <(
+              find . -name "*-androidTest.apk" -exec stat -c "%s %n" {} \; | sort -rn
+            )
 
-            TEST_APK_COUNT=$(echo "$SORTED_LIST" | wc -l | tr -d ' ')
-            MID=$(( (TEST_APK_COUNT + 1) / 2 ))
+            TEST_APK_COUNT=${#entries[@]}
 
-            echo "$SORTED_LIST" | cut -d: -f1 > "$BATCH_0/test_apks.txt"
+            # Write name-sorted index used by instrumentation shards
+            for entry in "${entries[@]}"; do
+              basename "${entry#* }"
+            done | LC_ALL=C sort > "$BATCH_0/test_apks.txt"
 
-            i=0
-            while IFS= read -r entry; do
-              base="${entry%%:*}"
-              path="${entry#*:}"
-              if [ "$i" -lt "$MID" ]; then
+            bin0_size=0
+            bin1_size=0
+
+            for entry in "${entries[@]}"; do
+              size="${entry%% *}"
+              path="${entry#* }"
+              if (( bin0_size + size <= LIMIT )); then
                 cp "$path" "$BATCH_0/"
+                (( bin0_size += size ))
               else
                 cp "$path" "$BATCH_1/"
+                (( bin1_size += size ))
               fi
-              i=$((i + 1))
-            done <<< "$SORTED_LIST"
+            done
 
             envman add --key TEST_APK_COUNT --value "$TEST_APK_COUNT"
             envman add --key TEST_INTERMEDIATES_DIR_0 --value "$BATCH_0"
             envman add --key TEST_INTERMEDIATES_DIR_1 --value "$BATCH_1"
 
-            echo "Batch 0 ($MID APKs):"
-            ls "$BATCH_0"/*.apk 2>/dev/null | xargs -I{} basename {}
-            echo "Batch 1 ($((TEST_APK_COUNT - MID)) APKs):"
-            ls "$BATCH_1"/*.apk 2>/dev/null | xargs -I{} basename {}
+            echo "Test APKs indexed ($TEST_APK_COUNT):"
+            cat "$BATCH_0/test_apks.txt"
+            echo "Batch 0: $(( bin0_size / 1024 / 1024 )) MB ($(ls "$BATCH_0"/*.apk 2>/dev/null | wc -l | tr -d ' ') APKs)"
+            echo "Batch 1: $(( bin1_size / 1024 / 1024 )) MB ($(ls "$BATCH_1"/*.apk 2>/dev/null | wc -l | tr -d ' ') APKs)"
 
             find "$BITRISE_DEPLOY_DIR" -name "*-androidTest.apk" -delete
     - share-pipeline-variable@1:
