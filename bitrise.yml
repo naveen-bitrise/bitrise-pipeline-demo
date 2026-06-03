@@ -162,7 +162,7 @@ workflows:
             adb install -r -t "$TEST_APK"
 
             AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" | sort -V | tail -1)
-            TEST_PACKAGE=$("$AAPT2" dump badging "$TEST_APK" | grep "^package: name=" | sed "s/.*name='\([^']*\)'.*/\1/")
+            TEST_PACKAGE=$("$AAPT2" dump packagename "$TEST_APK")
             echo "Test package: $TEST_PACKAGE"
 
             export MODULE
