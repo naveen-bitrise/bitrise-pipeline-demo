@@ -69,6 +69,8 @@ workflows:
             ls "$BATCH_0"/*.apk 2>/dev/null | xargs -I{} basename {}
             echo "Batch 1 ($((TEST_APK_COUNT - MID)) APKs):"
             ls "$BATCH_1"/*.apk 2>/dev/null | xargs -I{} basename {}
+
+            find "$BITRISE_DEPLOY_DIR" -name "*-androidTest.apk" -delete
     - share-pipeline-variable@1:
         inputs:
         - variables: TEST_APK_COUNT=$TEST_APK_COUNT
