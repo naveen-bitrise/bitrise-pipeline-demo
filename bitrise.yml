@@ -142,7 +142,9 @@ workflows:
             envman add --key TEST_APK_NAME --value "$TEST_APK_NAME"
             envman add --key TEST_INTERMEDIATES_DIR --value "$TEST_INTERMEDIATES_DIR"
             envman add --key MODULE --value "$MODULE"
-    - avd-manager@2: {}
+    - avd-manager@2:
+        inputs:
+        - api_level: "33"
     - wait-for-android-emulator@1: {}
     - script@1:
         title: Install APKs and run instrumentation tests
